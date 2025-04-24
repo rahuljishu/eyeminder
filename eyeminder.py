@@ -424,42 +424,60 @@ def run_method1(image_path):
 def run_method2(image_path):
     # Read the image
     img = cv2.imread(image_path)
+    if img is None:
+        raise FileNotFoundError(f"Image not found at: {image_path}")
     
-    # Convert to grayscale
-    gray = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
+    # Resize for standardization
+    resized = cv2.resize(img, (512, 512))
     
-    # Resize and extract Green channel
-    resized = cv2.resize(img, (512, 512))  # Standardize size
-    green = resized[:, :, 1]  # Green channel (index 1 in BGR)
+    # Extract green channel (most informative for retinal images)
+    green = resized[:, :, 1]
     
-    # Apply CLAHE
-    clahe = cv2.createCLAHE(clipLimit=2.0, tileGridSize=(8, 8))
+    # Apply CLAHE for contrast enhancement
+    clahe = cv2.createCLAHE(clipLimit=3.0, tileGridSize=(8, 8))
     clahe_green = clahe.apply(green)
     
-    # Complement the CLAHE image
-    complement = 255 - clahe_green
+    # Detect and mask optic disc (bright circular region)
+    circles = cv2.HoughCircles(
+        cv2.GaussianBlur(green, (9, 9), 2),
+        cv2.HOUGH_GRADIENT, dp=1, minDist=50,
+        param1=50, param2=30, minRadius=10, maxRadius=50
+    )
     
-    # Morphological Opening & Subtraction
-    kernel = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (5, 5))
-    opened = cv2.morphologyEx(complement, cv2.MORPH_OPEN, kernel)
-    subtracted = cv2.subtract(complement, opened)
+    # Create mask to remove optic disc
+    mask = np.ones_like(green) * 255
+    if circles is not None:
+        circles = np.uint16(np.around(circles))
+        for (x, y, r) in circles[0, :]:
+            cv2.circle(mask, (x, y), r, 0, -1)
     
-    # Median Filtering & Subtraction
-    median = cv2.medianBlur(subtracted, 5)
-    final_sub = cv2.subtract(median, opened)
+    # Apply mask to remove optic disc
+    masked_img = cv2.bitwise_and(clahe_green, mask)
     
-    # Adjust Image Intensity
-    adjusted = exposure.rescale_intensity(final_sub, in_range=(50, 200))
+    # Enhance hemorrhage features using Hessian-based filtering
+    frangi_result = feature.hessian_matrix(
+        masked_img, 
+        sigma=1.5, 
+        use_gaussian_derivatives=False
+    )
+    vesselness = feature.hessian_matrix_eigvals(frangi_result)[0]
+    vesselness = exposure.rescale_intensity(vesselness, out_range=(0, 255))
     
-    # Complement Again
-    final_complement = 255 - adjusted
+    # Apply adaptive thresholding for hemorrhage segmentation
+    binary = cv2.adaptiveThreshold(
+        np.uint8(vesselness), 255,
+        cv2.ADAPTIVE_THRESH_GAUSSIAN_C,
+        cv2.THRESH_BINARY_INV, 51, 2
+    )
     
-    # Region Growing Segmentation (Local Thresholding)
-    thresh = filters.threshold_local(final_complement, block_size=51, offset=10)
-    binary = final_complement > thresh
+    # Clean up result with morphological operations
+    kernel = morphology.disk(3)
+    cleaned = morphology.binary_opening(binary, kernel)
+    final_mask = morphology.remove_small_objects(cleaned.astype(bool), min_size=50)
     
-    # Morphological Closing to Smooth Edges
-    closed = morphology.binary_closing(binary, footprint=morphology.disk(3))
+    # Create visualization with overlay
+    overlay = resized.copy()
+    overlay[final_mask, :] = [0, 0, 255]  # Mark hemorrhages in red
     
     # Create figure for display
     fig, axes = plt.subplots(2, 3, figsize=(15, 10))
@@ -471,17 +489,17 @@ def run_method2(image_path):
     axes[1].imshow(clahe_green, cmap='gray')
     axes[1].set_title("CLAHE Green Channel")
     
-    axes[2].imshow(complement, cmap='gray')
-    axes[2].set_title("Complemented CLAHE")
+    axes[2].imshow(masked_img, cmap='gray')
+    axes[2].set_title("Optic Disc Removed")
     
-    axes[3].imshow(adjusted, cmap='gray')
-    axes[3].set_title("Adjusted Intensity")
+    axes[3].imshow(vesselness, cmap='gray')
+    axes[3].set_title("Vessel Enhancement")
     
     axes[4].imshow(binary, cmap='gray')
-    axes[4].set_title("Region Growing (Binary)")
+    axes[4].set_title("Binary Threshold")
     
-    axes[5].imshow(closed, cmap='gray')
-    axes[5].set_title("Final Hemorrhage Detection")
+    axes[5].imshow(cv2.cvtColor(overlay, cv2.COLOR_BGR2RGB))
+    axes[5].set_title("Hemorrhage Detection")
     
     for ax in axes:
         ax.axis("off")
