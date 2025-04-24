@@ -384,8 +384,8 @@ def run_method1(image_path):
     # Convert to binary using thresholding
     _, vessel_binary = cv2.threshold((vessel_enhanced * 255).astype(np.uint8), 20, 255, cv2.THRESH_BINARY)
     
-    # Remove small noise objects
-    vessel_binary = remove_small_objects(vessel_binary.astype(bool), min_size=100).astype(np.uint8) * 255
+    # Remove small noise objects - FIX: Use the morphology module prefix
+    vessel_binary = morphology.remove_small_objects(vessel_binary.astype(bool), min_size=100).astype(np.uint8) * 255
     
     # Convert image to HSV and extract red channel for hemorrhages
     hsv = cv2.cvtColor(image, cv2.COLOR_BGR2HSV)
